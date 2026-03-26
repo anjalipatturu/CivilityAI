@@ -18,10 +18,12 @@ def verify_google_token(token):
     Returns user info if valid, None if invalid.
     """
     try:
-        client_id = getattr(settings, 'GOOGLE_CLIENT_ID', '')
+        client_id = getattr(settings, 'GOOGLE_CLIENT_ID', '').strip()
 
-        if not client_id:
-            # Demo mode — accept the token as-is (for development)
+        # If no client ID is configured or it's still the placeholder
+        # from the example .env, fall back to demo mode so development
+        # and "Demo" login work without real Google credentials.
+        if not client_id or client_id.startswith('your-google-client-id'):
             return _demo_verify(token)
 
         idinfo = id_token.verify_oauth2_token(

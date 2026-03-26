@@ -1,13 +1,20 @@
-"""
-Voice and audio processing for Civility.ai
+"""Voice and audio processing for Civility.ai.
+
+This module supports:
 - Voice Upload: convert audio files to text using speech recognition
 - Audio analysis support
+
+Note: The "speech_recognition" package currently depends on the
+deprecated stdlib module "aifc", which was removed in Python 3.13.
+To avoid import errors preventing Django from starting, we lazily
+import speech_recognition inside the conversion function instead of
+at module import time. If the environment does not provide
+"speech_recognition" (or its dependencies), audio transcription
+will gracefully fail while the rest of the API continues to work.
 """
 
 import os
 import tempfile
-import speech_recognition as sr
-from pydub import AudioSegment
 
 
 def convert_audio_to_text(audio_file_path):
@@ -15,6 +22,24 @@ def convert_audio_to_text(audio_file_path):
     Convert an audio file to text using Google's Speech Recognition.
     Supports: wav, mp3, ogg, flac, m4a, webm
     """
+    try:
+        import speech_recognition as sr
+    except Exception as e:  # pragma: no cover - environment-specific
+        return {
+            'success': False,
+            'text': '',
+            'error': f'Speech recognition not available: {str(e)}',
+        }
+
+    try:
+        from pydub import AudioSegment
+    except Exception as e:  # pragma: no cover - environment-specific
+        return {
+            'success': False,
+            'text': '',
+            'error': f'Audio processing not available: {str(e)}',
+        }
+
     recognizer = sr.Recognizer()
     temp_wav = None
 
