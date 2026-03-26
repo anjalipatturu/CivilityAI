@@ -5,7 +5,7 @@ API Views for Civility.ai backend
 import json
 import os
 import traceback
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
@@ -374,3 +374,14 @@ def moderation_history(request):
         'history': history,
         'count': len(history),
     })
+
+
+# ── Favicon (to avoid 404 spam) ─────────────────────────────
+
+def favicon(request):
+    """Return an empty 204 response for /favicon.ico requests.
+
+    This prevents noisy 404 logs from browsers requesting the tab icon
+    when no favicon is configured for the backend service.
+    """
+    return HttpResponse(status=204)

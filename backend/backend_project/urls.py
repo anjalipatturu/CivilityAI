@@ -10,6 +10,9 @@ urlpatterns = [
     path('', views.health_check, name='health_check'),
     path('api/health', views.health_check, name='api_health'),
 
+    # Favicon (prevent 404 noise)
+    path('favicon.ico', views.favicon, name='favicon'),
+
     # Authentication
     path('auth/google-login', views.google_login, name='google_login'),
     path('auth/verify', views.verify_token, name='verify_token'),
