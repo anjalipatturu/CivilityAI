@@ -1,9 +1,8 @@
-"""
-URL Configuration for Civility.ai backend
-"""
+"""URL Configuration for Civility.ai backend"""
 
 from django.urls import path
 from . import views
+from moderation.views import test_content
 
 urlpatterns = [
     # Health check
@@ -14,6 +13,8 @@ urlpatterns = [
     path('favicon.ico', views.favicon, name='favicon'),
 
     # Authentication
+    path('auth/register', views.email_register, name='email_register'),
+    path('auth/login', views.email_login, name='email_login'),
     path('auth/google-login', views.google_login, name='google_login'),
     path('auth/verify', views.verify_token, name='verify_token'),
 
@@ -28,4 +29,10 @@ urlpatterns = [
 
     # Moderation history
     path('moderation-history', views.moderation_history, name='moderation_history'),
+
+    # Test endpoint to trigger Content signal-based admin email
+    path('test-content', test_content, name='test_content'),
+
+    # Alternate test route
+    path('test/', test_content),
 ]

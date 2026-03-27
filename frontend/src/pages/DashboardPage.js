@@ -9,6 +9,7 @@ import {
 
 import FileUploader from '../components/FileUploader';
 import VoiceRecorder from '../components/VoiceRecorder';
+import VoiceUpload from '../components/VoiceUpload';
 import LoadingSpinner from '../components/LoadingSpinner';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -18,6 +19,7 @@ function DashboardPage({ user, token }) {
   const [activeTab, setActiveTab] = useState('text');
   const [textContent, setTextContent] = useState('');
   const [files, setFiles] = useState([]);
+  const [voiceFiles, setVoiceFiles] = useState([]);
   const [transcription, setTranscription] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
@@ -30,7 +32,7 @@ function DashboardPage({ user, token }) {
 
   const handleSubmit = async () => {
     // Validate input
-    if (!textContent && files.length === 0 && !transcription) {
+    if (!textContent && files.length === 0 && voiceFiles.length === 0 && !transcription) {
       toast.error('Please provide some content to analyze');
       return;
     }
@@ -52,6 +54,10 @@ function DashboardPage({ user, token }) {
         formData.append('files', file);
       });
 
+      voiceFiles.forEach((file) => {
+        formData.append('files', file);
+      });
+
       const response = await axios.post(`${API_URL}/analyze-content`, formData, {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -60,17 +66,31 @@ function DashboardPage({ user, token }) {
       });
 
       if (response.data.success) {
+        const results = response.data.results || [];
+
+        // Notify explicitly when voice-to-text was used
+        if (results.some(r => r && r.transcribed_text)) {
+          toast.info('Voice transcription processed successfully. Showing moderation on the transcribed text.');
+        }
+
         toast.success(`${response.data.count} item(s) analyzed successfully!`);
+
         // Navigate to results with data
-        navigate('/results', { state: { results: response.data.results } });
+        navigate('/results', { state: { results } });
       }
     } catch (error) {
       console.error('Analysis error:', error);
 
-      if (error.response?.status === 401) {
+      const status = error.response?.status;
+
+      if (status === 401) {
         toast.error('Session expired. Please login again.');
+      } else if (status === 403) {
+        // Backend explicitly blocked the request (e.g. suspended account).
+        const message = error.response?.data?.error || 'Access denied for this analysis request.';
+        toast.error(message);
       } else {
-        // Demo mode – simulate results
+        // Demo mode – simulate results only for network/unknown errors
         const demoResults = [];
 
         if (textContent) {
@@ -90,6 +110,10 @@ function DashboardPage({ user, token }) {
           else if (['mp4', 'avi', 'mov', 'mkv', 'webm'].includes(ext)) type = 'video';
           else if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) type = 'audio';
           demoResults.push(simulateAnalysis(file.name, type));
+        });
+
+        voiceFiles.forEach((file) => {
+          demoResults.push(simulateAnalysis(file.name, 'audio'));
         });
 
         if (demoResults.length > 0) {
@@ -133,10 +157,11 @@ function DashboardPage({ user, token }) {
   const clearAll = () => {
     setTextContent('');
     setFiles([]);
+    setVoiceFiles([]);
     setTranscription('');
   };
 
-  const hasContent = textContent || files.length > 0 || transcription;
+  const hasContent = textContent || files.length > 0 || voiceFiles.length > 0 || transcription;
 
   return (
     <div className="page-container">
@@ -188,12 +213,9 @@ function DashboardPage({ user, token }) {
         {activeTab === 'voice-upload' && (
           <div>
             <label className="form-label">Upload an audio file for transcription & analysis</label>
-            <FileUploader
-              files={files.filter(f => {
-                const ext = f.name.split('.').pop().toLowerCase();
-                return ['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'webm'].includes(ext);
-              })}
-              setFiles={setFiles}
+            <VoiceUpload
+              files={voiceFiles}
+              setFiles={setVoiceFiles}
             />
           </div>
         )}
@@ -229,6 +251,11 @@ function DashboardPage({ user, token }) {
           {files.length > 0 && (
             <span className="badge badge-approved" style={{ textTransform: 'none' }}>
               <FiUploadCloud size={12} /> {files.length} file(s) ready
+            </span>
+          )}
+          {voiceFiles.length > 0 && (
+            <span className="badge badge-approved" style={{ textTransform: 'none' }}>
+              <FiMic size={12} /> {voiceFiles.length} voice file(s) ready
             </span>
           )}
           {transcription && (

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { FiUploadCloud, FiX, FiFile, FiImage, FiVideo, FiMusic } from 'react-icons/fi';
 
-function FileUploader({ files, setFiles }) {
+function FileUploader({ files, setFiles, accept }) {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -73,7 +73,7 @@ function FileUploader({ files, setFiles }) {
         ref={fileInputRef}
         type="file"
         multiple
-        accept="image/*,video/*,audio/*"
+        accept={accept || 'image/*,video/*,audio/*'}
         style={{ display: 'none' }}
         onChange={handleFileSelect}
       />

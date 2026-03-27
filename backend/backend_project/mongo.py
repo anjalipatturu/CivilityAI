@@ -65,8 +65,10 @@ def create_or_update_user(user_data):
             'last_login': datetime.now(timezone.utc),
             'total_uploads': 0,
             'flagged_count': 0,
+            'consecutive_flagged': 0,
             'abuse_score': 0,
             'behavior_category': 'Safe',
+            'status': 'active',  # active | suspended
         }
         collection.insert_one(new_user)
         return new_user
@@ -103,6 +105,12 @@ def update_user_behavior(user_id, is_flagged, abusive_score):
     total_uploads = user.get('total_uploads', 0) + 1
     flagged_count = user.get('flagged_count', 0) + (1 if is_flagged else 0)
 
+    # Consecutive flagged counter (for repeat-offender detection)
+    if is_flagged:
+        consecutive_flagged = user.get('consecutive_flagged', 0) + 1
+    else:
+        consecutive_flagged = 0
+
     # Calculate rolling abuse score (weighted average)
     current_abuse = user.get('abuse_score', 0)
     new_abuse = round((current_abuse * 0.7) + (abusive_score * 0.3), 1)
@@ -122,6 +130,7 @@ def update_user_behavior(user_id, is_flagged, abusive_score):
         {'$set': {
             'total_uploads': total_uploads,
             'flagged_count': flagged_count,
+            'consecutive_flagged': consecutive_flagged,
             'abuse_score': new_abuse,
             'behavior_category': category,
         }}
@@ -130,6 +139,7 @@ def update_user_behavior(user_id, is_flagged, abusive_score):
     return {
         'total_uploads': total_uploads,
         'flagged_count': flagged_count,
+        'consecutive_flagged': consecutive_flagged,
         'abuse_score': new_abuse,
         'behavior_category': category,
     }

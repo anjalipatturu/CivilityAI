@@ -1,21 +1,84 @@
-"""
-API Views for Civility.ai backend
-"""
+"""API Views for Civility.ai backend."""
 
 import json
 import os
 import traceback
+from django.conf import settings
 from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .auth import login_with_google, get_user_from_request
+from moderation.models import Content
+
+from .auth import (
+    get_user_from_request,
+    login_with_google,
+    login_with_password,
+    register_local_user,
+)
 from .gemini import analyze_text_content, analyze_image_content, analyze_video_content
 from .voice import convert_audio_to_text, save_uploaded_audio, cleanup_audio_file
-from .mongo import save_moderation_log, get_user_moderation_logs
-from .behavior import track_content_submission, get_behavior_summary, should_send_alert
-from .utils import save_uploaded_file, cleanup_file, get_content_type_from_file, send_admin_alert
+from .mongo import save_moderation_log, get_user_moderation_logs, find_user_by_id
+from .behavior import track_content_submission, get_behavior_summary, should_send_alert, evaluate_abuse_policy
+from .utils import (
+    save_uploaded_file,
+    cleanup_file,
+    get_content_type_from_file,
+    send_admin_alert,
+    send_user_warning_email,
+    send_user_violation_email,
+    send_admin_alert_email,
+    blur_image_to_media,
+)
 from .models import moderation_log_document
+
+
+def _apply_policy_notifications(user_id, result, policy):
+    """Send user and admin notifications based on policy evaluation."""
+    try:
+        user = find_user_by_id(user_id)
+    except Exception:
+        user = None
+
+    user_email = user.get('email') if user else None
+
+    # User notifications (via spec-named helpers)
+    if policy.get('notify_user') and user_email:
+        action = policy.get('action')
+        abuse_score = policy.get('abuse_score')
+
+        if action == 'warn':
+            send_user_warning_email(user_email, abuse_score)
+        elif action in ('delete_post', 'delete_account'):
+            send_user_violation_email(user_email, abuse_score, action)
+
+    # Admin notifications
+    if policy.get('notify_admin'):
+        behavior = get_behavior_summary(user_id)
+        recent_logs = get_user_moderation_logs(user_id, limit=5)
+
+        # Build a compact summary of recent flagged items
+        lines = []
+        for log in recent_logs:
+            ts = str(log.get('created_at', ''))
+            score = log.get('abusive_score', 0)
+            ctype = log.get('content_type', 'unknown')
+            snippet = log.get('transcribed_text') or log.get('original_filename', '(no content stored)')
+            if isinstance(snippet, str) and len(snippet) > 120:
+                snippet = snippet[:117] + '...'
+            lines.append(f'- [{ts}] ({ctype}) score={score}, content={snippet}')
+
+        behavior_trend = policy.get('behavior_trend', 'unknown')
+
+        reason = (
+            f"Policy action: {policy.get('action')} | abuse_score={policy.get('abuse_score')} | "
+            f"flagged_count_window={policy.get('flagged_count')} | "
+            f"consecutive_flagged={policy.get('consecutive_flagged_count', 0)} | "
+            f"repeat_offender={policy.get('repeat_offender')} | "
+            f"trend={behavior_trend}.\nRecent items:\n" + '\n'.join(lines)
+        )
+
+        send_admin_alert_email(behavior, reason=reason)
 
 
 # ── Health Check ─────────────────────────────────────────────
@@ -31,11 +94,69 @@ def health_check(request):
 
 # ── Authentication ───────────────────────────────────────────
 
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def email_register(request):
+    """POST /auth/register
+
+    Register a new user with email and password.
+    """
+    try:
+        body = json.loads(request.body)
+        email = body.get('email', '')
+        password = body.get('password', '')
+        name = body.get('name', '')
+
+        result, error = register_local_user(email, password, name)
+        if error:
+            return JsonResponse({'error': error}, status=400)
+
+        # Include a success flag so the frontend LoginPage can
+        # reliably detect successful registration and log the user in.
+        return JsonResponse({
+            'success': True,
+            'token': result['token'],
+            'user': result['user'],
+        })
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON body'}, status=400)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def email_login(request):
+    """POST /auth/login
+
+    Authenticate an existing user via email and password.
+    """
+    try:
+        body = json.loads(request.body)
+        email = body.get('email', '')
+        password = body.get('password', '')
+
+        result, error = login_with_password(email, password)
+        if error:
+            return JsonResponse({'error': error}, status=401)
+
+        return JsonResponse({
+            'success': True,
+            'token': result['token'],
+            'user': result['user'],
+        })
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON body'}, status=400)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def google_login(request):
-    """
-    POST /auth/google-login
+    """POST /auth/google-login
+
     Accept Google OAuth token, verify, create/update user, return JWT.
     """
     try:
@@ -43,16 +164,12 @@ def google_login(request):
         google_token = body.get('token', '')
 
         if not google_token:
-            return JsonResponse({
-                'error': 'Google token is required'
-            }, status=400)
+            return JsonResponse({'error': 'Google token is required'}, status=400)
 
         result, error = login_with_google(google_token)
 
         if error:
-            return JsonResponse({
-                'error': error
-            }, status=401)
+            return JsonResponse({'error': error}, status=401)
 
         return JsonResponse({
             'success': True,
@@ -108,6 +225,19 @@ def analyze_content(request):
     if not user_id:
         return JsonResponse({'error': 'Authentication required'}, status=401)
 
+    # Prevent banned / suspended users from posting, but only when
+    # account suspension is explicitly enabled.
+    user_doc = find_user_by_id(user_id)
+    if (
+        getattr(settings, 'ENABLE_ACCOUNT_SUSPENSION', False)
+        and user_doc
+        and user_doc.get('status') == 'suspended'
+    ):
+        return JsonResponse({
+            'error': 'Account is suspended due to severe policy violations.',
+            'action': 'delete_account',
+        }, status=403)
+
     temp_files = []
 
     try:
@@ -125,9 +255,20 @@ def analyze_content(request):
         if text_content:
             result = analyze_text_content(text_content, 'text')
             result['transcribed_text'] = None
+
+            # Apply abuse policy for this submission
+            policy = evaluate_abuse_policy(user_id, result.get('abusive_score', 0))
+            result['abuse_policy'] = policy
+            result['abuse_score'] = policy['abuse_score']
+            result['action'] = policy['action']
+            result['notify_user'] = policy['notify_user']
+            result['notify_admin'] = policy['notify_admin']
+            result['repeat_offender'] = policy['repeat_offender']
+            result['flagged_count'] = policy['flagged_count']
+
             results.append(result)
 
-            # Save moderation log
+            # Save moderation log with policy info
             log = moderation_log_document(
                 user_id=user_id,
                 content_type='text',
@@ -137,15 +278,55 @@ def analyze_content(request):
                 abusive_score=result['abusive_score'],
                 categories_detected=result.get('categories_detected', []),
                 corrected_text=result.get('corrected_text'),
+                transcribed_text=text_content,
             )
+            log['abuse_action'] = policy['action']
+            log['repeat_offender'] = policy['repeat_offender']
+            log['flagged_count'] = policy['flagged_count']
+
             save_moderation_log(log)
             track_content_submission(user_id, result)
+
+            # Notifications
+            _apply_policy_notifications(user_id, result, policy)
+
+            # Also persist to Django ORM Content model so signals can
+            # trigger admin alerts based on flagged_count/score
+            try:
+                # Compute flagged_count locally using Django ORM so it
+                # doesn't depend on MongoDB connectivity.
+                abuse_score = policy.get('abuse_score', 0) or 0
+                email = (user_doc or {}).get('email', '')
+                flagged_count_orm = 0
+                if abuse_score > 25 and email:
+                    last = Content.objects.filter(user_email=email).order_by('-id').first()
+                    prev = last.flagged_count if last else 0
+                    flagged_count_orm = prev + 1
+
+                Content.objects.create(
+                    text=text_content,
+                    flagged_count=flagged_count_orm,
+                    score=abuse_score,
+                    user_email=email,
+                )
+            except Exception:
+                pass
 
         # ── Handle transcription (from frontend speech-to-text) ──
         transcription = request.POST.get('transcription', '')
         if transcription:
             result = analyze_text_content(transcription, 'voice-to-text')
             result['transcribed_text'] = transcription
+
+            policy = evaluate_abuse_policy(user_id, result.get('abusive_score', 0))
+            result['abuse_policy'] = policy
+            result['abuse_score'] = policy['abuse_score']
+            result['action'] = policy['action']
+            result['notify_user'] = policy['notify_user']
+            result['notify_admin'] = policy['notify_admin']
+            result['repeat_offender'] = policy['repeat_offender']
+            result['flagged_count'] = policy['flagged_count']
+
             results.append(result)
 
             log = moderation_log_document(
@@ -159,8 +340,31 @@ def analyze_content(request):
                 corrected_text=result.get('corrected_text'),
                 transcribed_text=transcription,
             )
+            log['abuse_action'] = policy['action']
+            log['repeat_offender'] = policy['repeat_offender']
+            log['flagged_count'] = policy['flagged_count']
+
             save_moderation_log(log)
             track_content_submission(user_id, result)
+            _apply_policy_notifications(user_id, result, policy)
+
+            try:
+                abuse_score = policy.get('abuse_score', 0) or 0
+                email = (user_doc or {}).get('email', '')
+                flagged_count_orm = 0
+                if abuse_score > 25 and email:
+                    last = Content.objects.filter(user_email=email).order_by('-id').first()
+                    prev = last.flagged_count if last else 0
+                    flagged_count_orm = prev + 1
+
+                Content.objects.create(
+                    text=transcription,
+                    flagged_count=flagged_count_orm,
+                    score=abuse_score,
+                    user_email=email,
+                )
+            except Exception:
+                pass
 
         # ── Handle file uploads ──
         files = request.FILES.getlist('files')
@@ -179,6 +383,29 @@ def analyze_content(request):
                 temp_files.append(file_path)
                 result = analyze_image_content(file_path, 'image')
                 result['transcribed_text'] = None
+
+                policy = evaluate_abuse_policy(user_id, result.get('abusive_score', 0))
+                result['abuse_policy'] = policy
+                result['abuse_score'] = policy['abuse_score']
+                result['action'] = policy['action']
+                result['notify_user'] = policy['notify_user']
+                result['notify_admin'] = policy['notify_admin']
+                result['repeat_offender'] = policy['repeat_offender']
+                result['flagged_count'] = policy['flagged_count']
+
+                # If image is inappropriate (e.g. nudity / high abuse score),
+                # generate a blurred version and return its URL.
+                cats = [c.lower() for c in result.get('categories_detected', [])]
+                needs_blur = (
+                    any('nudity' in c or 'sexual' in c for c in cats)
+                    or result.get('abusive_score', 0) >= 60
+                )
+                if needs_blur:
+                    blurred_url = blur_image_to_media(file_path, uploaded_file.name)
+                    if blurred_url:
+                        result['is_blurred'] = True
+                        result['blurred_image_url'] = blurred_url
+
                 results.append(result)
 
             elif content_type == 'video':
@@ -186,6 +413,16 @@ def analyze_content(request):
                 temp_files.append(file_path)
                 result = analyze_video_content(file_path, 'video')
                 result['transcribed_text'] = None
+
+                policy = evaluate_abuse_policy(user_id, result.get('abusive_score', 0))
+                result['abuse_policy'] = policy
+                result['abuse_score'] = policy['abuse_score']
+                result['action'] = policy['action']
+                result['notify_user'] = policy['notify_user']
+                result['notify_admin'] = policy['notify_admin']
+                result['repeat_offender'] = policy['repeat_offender']
+                result['flagged_count'] = policy['flagged_count']
+
                 results.append(result)
 
             elif content_type == 'audio':
@@ -199,6 +436,32 @@ def analyze_content(request):
                     transcribed = transcription_result['text']
                     result = analyze_text_content(transcribed, 'audio')
                     result['transcribed_text'] = transcribed
+
+                    policy = evaluate_abuse_policy(user_id, result.get('abusive_score', 0))
+                    result['abuse_policy'] = policy
+                    result['abuse_score'] = policy['abuse_score']
+                    result['action'] = policy['action']
+                    result['notify_user'] = policy['notify_user']
+                    result['notify_admin'] = policy['notify_admin']
+                    result['repeat_offender'] = policy['repeat_offender']
+                    result['flagged_count'] = policy['flagged_count']
+                    try:
+                        abuse_score = policy.get('abuse_score', 0) or 0
+                        email = (user_doc or {}).get('email', '')
+                        flagged_count_orm = 0
+                        if abuse_score > 25 and email:
+                            last = Content.objects.filter(user_email=email).order_by('-id').first()
+                            prev = last.flagged_count if last else 0
+                            flagged_count_orm = prev + 1
+
+                        Content.objects.create(
+                            text=transcribed,
+                            flagged_count=flagged_count_orm,
+                            score=abuse_score,
+                            user_email=email,
+                        )
+                    except Exception:
+                        pass
                 else:
                     result = {
                         'content_type': 'audio',
@@ -214,7 +477,7 @@ def analyze_content(request):
                 results.append(result)
 
             else:
-                results.append({
+                tmp_result = {
                     'content_type': 'unknown',
                     'status': 'Approved',
                     'reason': f'Unsupported file type: {uploaded_file.name}',
@@ -223,7 +486,18 @@ def analyze_content(request):
                     'categories_detected': [],
                     'corrected_text': None,
                     'transcribed_text': None,
-                })
+                }
+
+                policy = evaluate_abuse_policy(user_id, tmp_result.get('abusive_score', 0))
+                tmp_result['abuse_policy'] = policy
+                tmp_result['abuse_score'] = policy['abuse_score']
+                tmp_result['action'] = policy['action']
+                tmp_result['notify_user'] = policy['notify_user']
+                tmp_result['notify_admin'] = policy['notify_admin']
+                tmp_result['repeat_offender'] = policy['repeat_offender']
+                tmp_result['flagged_count'] = policy['flagged_count']
+
+                results.append(tmp_result)
 
             # Save log for each file
             if results:
@@ -240,18 +514,22 @@ def analyze_content(request):
                     transcribed_text=latest.get('transcribed_text'),
                     original_filename=uploaded_file.name,
                 )
+
+                policy = latest.get('abuse_policy') or evaluate_abuse_policy(
+                    user_id, latest.get('abusive_score', 0)
+                )
+                log['abuse_action'] = policy['action']
+                log['repeat_offender'] = policy['repeat_offender']
+                log['flagged_count'] = policy['flagged_count']
+
                 save_moderation_log(log)
                 track_content_submission(user_id, latest)
+                _apply_policy_notifications(user_id, latest, policy)
 
         if not results:
             return JsonResponse({
                 'error': 'No content provided for analysis. Send text, transcription, or files.'
             }, status=400)
-
-        # Check if admin alert should be sent
-        alert_needed, behavior = should_send_alert(user_id)
-        if alert_needed and behavior:
-            send_admin_alert(behavior)
 
         return JsonResponse({
             'success': True,

@@ -1,9 +1,8 @@
-"""
-Utility helpers for Civility.ai backend
-"""
+"""Utility helpers for Civility.ai backend"""
 
 import os
 import tempfile
+import uuid
 from django.core.mail import send_mail
 from django.conf import settings
 
@@ -33,6 +32,42 @@ def cleanup_file(file_path):
                 os.rmdir(parent_dir)
     except OSError:
         pass
+
+
+def blur_image_to_media(temp_path, original_filename):
+    """Blur an image and save it under MEDIA_ROOT/blurred.
+
+    Returns the web-accessible URL (using MEDIA_URL) or None on failure.
+    """
+    try:
+        from PIL import Image, ImageFilter
+    except Exception:
+        return None
+
+    try:
+        media_root = getattr(settings, 'MEDIA_ROOT', None)
+        media_url = getattr(settings, 'MEDIA_URL', '/media/')
+        if not media_root:
+            return None
+
+        blurred_dir = os.path.join(media_root, 'blurred')
+        os.makedirs(blurred_dir, exist_ok=True)
+
+        base, ext = os.path.splitext(original_filename or 'image.jpg')
+        ext = ext or '.jpg'
+        filename = f"{uuid.uuid4().hex}{ext}"
+        out_path = os.path.join(blurred_dir, filename)
+
+        with Image.open(temp_path) as img:
+            blurred = img.filter(ImageFilter.GaussianBlur(radius=20))
+            blurred.save(out_path)
+
+        # Build URL (MEDIA_URL already ends with '/media/')
+        if not media_url.endswith('/'):
+            media_url = media_url + '/'
+        return f"{media_url}blurred/{filename}"
+    except Exception:
+        return None
 
 
 def get_content_type_from_file(file_name):
@@ -84,13 +119,24 @@ Action Required: Please review this user's activity.
 """
 
     try:
-        send_mail(
+        # Use the configured SMTP sender address so providers like Gmail
+        # accept and deliver the message correctly.
+        from_email = getattr(settings, 'EMAIL_HOST_USER', 'noreply@civility.ai')
+
+        sent_count = send_mail(
             subject=subject,
             message=message,
-            from_email='noreply@civility.ai',
+            from_email=from_email,
             recipient_list=[admin_email],
             fail_silently=True,
         )
+
+        # Log a hint to the console if no messages were accepted by
+        # the SMTP server so configuration issues are visible.
+        if sent_count == 0:
+            print("[Civility.ai] Admin alert email not sent; check EMAIL_HOST_USER/EMAIL_HOST_PASSWORD/ADMIN_EMAIL settings.")
+            return False
+
         return True
     except Exception:
         # Log the alert to console as fallback
@@ -98,3 +144,58 @@ Action Required: Please review this user's activity.
         print(message)
         print(f"{'='*50}\n")
         return False
+
+
+def send_user_email(email, subject, message):
+    """Low-level helper to send a plain-text email to a user."""
+    if not email:
+        return False
+
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email='noreply@civility.ai',
+            recipient_list=[email],
+            fail_silently=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def send_user_warning_email(email, abuse_score):
+    """CASE 2 warning email: mild inappropriate behavior."""
+    subject = 'Civility.ai: Please maintain respectful communication'
+    message = (
+        'Your recent activity appears potentially inappropriate or '
+        f'borderline toxic (abuse score: {abuse_score}). Please maintain '
+        'respectful communication to keep our community safe.'
+    )
+    return send_user_email(email, subject, message)
+
+
+def send_user_violation_email(email, abuse_score, action):
+    """CASE 3/4 violation email: content removed or account suspended."""
+    if action == 'delete_post':
+        subject = 'Civility.ai: Your content was removed'
+        message = (
+            'Your recent content violated our guidelines and has been '
+            f'removed (abuse score: {abuse_score}). Continued violations '
+            'may result in account suspension.'
+        )
+    elif action == 'delete_account':
+        subject = 'Civility.ai: Your account has been removed'
+        message = (
+            'Due to severe policy violations (abuse score: '
+            f'{abuse_score}), your account has been removed.'
+        )
+    else:
+        return False
+
+    return send_user_email(email, subject, message)
+
+
+def send_admin_alert_email(user_data, reason):
+    """Thin wrapper for admin alerts to satisfy the spec naming."""
+    return send_admin_alert(user_data, reason=reason)

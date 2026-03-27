@@ -8,6 +8,8 @@ const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 function LoginPage({ onLogin }) {
   const [isLoading, setIsLoading] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   const googleLogin = useGoogleLogin({
     scope: 'openid profile email',
@@ -62,6 +64,48 @@ function LoginPage({ onLogin }) {
     }
   };
 
+  const handleEmailLogin = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      const response = await axios.post(`${API_URL}/auth/login`, {
+        email,
+        password,
+      });
+
+      if (response.data.success) {
+        onLogin(response.data.user, response.data.token);
+        toast.success(`Welcome back, ${response.data.user.name || response.data.user.email}!`);
+      }
+    } catch (error) {
+      console.error('Email login error:', error);
+      toast.error(error.response?.data?.error || 'Invalid email or password');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleEmailRegister = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      const response = await axios.post(`${API_URL}/auth/register`, {
+        email,
+        password,
+      });
+
+      if (response.data.success) {
+        onLogin(response.data.user, response.data.token);
+        toast.success(`Account created for ${response.data.user.email}`);
+      }
+    } catch (error) {
+      console.error('Email register error:', error);
+      toast.error(error.response?.data?.error || 'Could not register with these details');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="login-page">
       {/* Background orbs */}
@@ -78,6 +122,51 @@ function LoginPage({ onLogin }) {
           AI-powered content moderation to keep your platform safe, clean, and respectful.
         </p>
 
+        {/* 1. Manual email/password login */}
+        <div className="login-divider">Sign in with email</div>
+
+        <form className="login-form" onSubmit={handleEmailLogin}>
+          <input
+            type="email"
+            className="input"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+          <input
+            type="password"
+            className="input"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={isLoading}
+              style={{ flex: 1 }}
+            >
+              <FiLock size={16} />
+              Login
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={handleEmailRegister}
+              disabled={isLoading}
+              style={{ flex: 1 }}
+            >
+              Create account
+            </button>
+          </div>
+        </form>
+
+        {/* 2. Google OAuth login */}
+        <div className="login-divider">or continue with Google</div>
+
         <button
           className="btn btn-google"
           onClick={() => googleLogin()}
@@ -93,7 +182,8 @@ function LoginPage({ onLogin }) {
           {isLoading ? 'Signing in...' : 'Continue with Google'}
         </button>
 
-        <div className="login-divider">or</div>
+        {/* Demo mode */}
+        <div className="login-divider">or try demo mode</div>
 
         <button
           className="btn btn-outline"

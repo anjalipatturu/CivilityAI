@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'corsheaders',
+    'moderation.apps.ModerationConfig',
 ]
 
 MIDDLEWARE = [
@@ -76,11 +77,20 @@ GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
 
 # Gemini API Configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+GEMINI_TEXT_MODEL_ID = os.getenv('GEMINI_TEXT_MODEL_ID', 'gemini-1.5-flash')
+GEMINI_VISION_MODEL_ID = os.getenv('GEMINI_VISION_MODEL_ID', 'gemini-1.5-flash')
 
 # JWT Configuration
 JWT_SECRET = os.getenv('JWT_SECRET', SECRET_KEY)
 JWT_ALGORITHM = 'HS256'
 JWT_EXPIRATION_HOURS = 24
+
+# Behavior / account policy
+# In development/demo, we usually don't want to hard-block users
+# by suspending their accounts. This flag controls whether
+# high-abuse content can flip a user's status to "suspended"
+# and block further submissions.
+ENABLE_ACCOUNT_SUSPENSION = os.getenv('ENABLE_ACCOUNT_SUSPENSION', 'False').lower() == 'true'
 
 # CORS Configuration
 CORS_ALLOW_ALL_ORIGINS = True
@@ -97,9 +107,16 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
-# Admin alert email
-ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@civility.ai')
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+# Email configuration (Gmail SMTP via environment variables)
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
+
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 
 # File upload settings
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')

@@ -8,10 +8,11 @@ import datetime
 import jwt
 import requests
 from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 
-from .mongo import create_or_update_user, find_user_by_id
+from .mongo import create_or_update_user, find_user_by_email, find_user_by_id, get_collection
 
 
 def _fetch_google_userinfo_with_access_token(access_token):
@@ -206,4 +207,91 @@ def login_with_google(google_token):
             'name': user_info.get('name', ''),
             'picture': user_info.get('picture', ''),
         }
+    }, None
+
+
+def register_local_user(email, password, name=''):
+    """Register a local (email/password) user.
+
+    Returns (result, error) similar to login_with_google.
+    """
+
+    email = (email or '').strip().lower()
+    if not email or not password:
+        return None, 'Email and password are required'
+
+    existing = find_user_by_email(email)
+    if existing and existing.get('password_hash'):
+        return None, 'User with this email already exists'
+
+    # Base user info; user_id defaults to email for local accounts
+    user_info = {
+        'user_id': existing.get('user_id') if existing else email,
+        'email': email,
+        'name': name or existing.get('name', '') if existing else name or '',
+        'picture': existing.get('picture', '') if existing else '',
+    }
+
+    # Create or update the user document
+    create_or_update_user(user_info)
+
+    # Store password hash separately
+    users = get_collection('users')
+    users.update_one(
+        {'email': email},
+        {'$set': {'password_hash': make_password(password)}},
+    )
+
+    created = find_user_by_email(email)
+    user_payload = {
+        'user_id': created.get('user_id', email),
+        'email': created.get('email', email),
+        'name': created.get('name', ''),
+        'picture': created.get('picture', ''),
+    }
+
+    jwt_token = generate_jwt(user_payload)
+
+    return {
+        'token': jwt_token,
+        'user': user_payload,
+    }, None
+
+
+def login_with_password(email, password):
+    """Authenticate a user via email/password.
+
+    Returns (result, error) similar to login_with_google.
+    """
+
+    email = (email or '').strip().lower()
+    if not email or not password:
+        return None, 'Email and password are required'
+
+    user = find_user_by_email(email)
+    if not user or not user.get('password_hash'):
+        return None, 'Invalid email or password'
+
+    if not check_password(password, user['password_hash']):
+        return None, 'Invalid email or password'
+
+    user_payload = {
+        'user_id': user.get('user_id', email),
+        'email': user.get('email', email),
+        'name': user.get('name', ''),
+        'picture': user.get('picture', ''),
+    }
+
+    jwt_token = generate_jwt(user_payload)
+
+    # Update last_login timestamp
+    users = get_collection('users')
+    users.update_one(
+        {'email': email},
+        {'$set': {'last_login': datetime.datetime.now(datetime.timezone.utc)}},
+    )
+
+    return {
+        'token': jwt_token,
+        'user': user_payload,
     }, None
