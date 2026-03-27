@@ -3,19 +3,79 @@ OAuth 2.0 Authentication module for Civility.ai
 Handles Google OAuth token verification & JWT generation
 """
 
-import jwt
 import datetime
+
+import jwt
+import requests
 from django.conf import settings
-from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
 
 from .mongo import create_or_update_user, find_user_by_id
 
 
-def verify_google_token(token):
+def _fetch_google_userinfo_with_access_token(access_token):
+    """Resolve a Google OAuth access token into user info.
+
+    Tries both the OpenID userinfo endpoint (v3) and the
+    OAuth2 userinfo endpoint (v2) to be robust against
+    different scope configurations.
     """
-    Verify a Google OAuth ID token.
-    Returns user info if valid, None if invalid.
+
+    # Try OpenID Connect userinfo endpoint (requires "openid" scope)
+    try:
+        response = requests.get(
+            'https://www.googleapis.com/oauth2/v3/userinfo',
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=5,
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            user_id = data.get('sub')
+            email = data.get('email')
+            if user_id and email:
+                return {
+                    'user_id': user_id,
+                    'email': email,
+                    'name': data.get('name', ''),
+                    'picture': data.get('picture', ''),
+                }
+    except Exception:
+        # Fall through to the v2 endpoint below
+        pass
+
+    # Fallback: older OAuth2 userinfo endpoint (works with profile/email scopes)
+    try:
+        response = requests.get(
+            'https://www.googleapis.com/oauth2/v2/userinfo',
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=5,
+        )
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+        user_id = data.get('id') or data.get('sub')
+        email = data.get('email')
+        if not user_id or not email:
+            return None
+
+        return {
+            'user_id': user_id,
+            'email': email,
+            'name': data.get('name', ''),
+            'picture': data.get('picture', ''),
+        }
+    except Exception:
+        return None
+
+
+def verify_google_token(token):
+    """Verify a Google token (access token or ID token).
+
+    Returns user info dict on success, or None on failure.
     """
     try:
         client_id = getattr(settings, 'GOOGLE_CLIENT_ID', '').strip()
@@ -26,6 +86,12 @@ def verify_google_token(token):
         if not client_id or client_id.startswith('your-google-client-id'):
             return _demo_verify(token)
 
+        # 1) First, assume we were given an OAuth access token and try userinfo.
+        userinfo = _fetch_google_userinfo_with_access_token(token)
+        if userinfo:
+            return userinfo
+
+        # 2) If that fails, fall back to verifying an ID token.
         idinfo = id_token.verify_oauth2_token(
             token,
             google_requests.Request(),

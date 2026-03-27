@@ -10,6 +10,7 @@ function LoginPage({ onLogin }) {
   const [isLoading, setIsLoading] = useState(false);
 
   const googleLogin = useGoogleLogin({
+    scope: 'openid profile email',
     onSuccess: async (tokenResponse) => {
       setIsLoading(true);
       try {
