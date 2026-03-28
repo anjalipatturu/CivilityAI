@@ -181,16 +181,6 @@ The frontend runs on `http://localhost:3000` and the backend on `http://localhos
 
 ### Configure Keys
 
-**Backend** (`backend/.env`):
-```env
-GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=your-client-secret
-```
-
-**Frontend** (`frontend/.env`):
-```env
-REACT_APP_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-```
 
 ### Gemini API Setup
 
@@ -348,8 +338,4 @@ Get moderation history for the authenticated user.
 - ✅ Fully responsive design
 - ✅ Modern Inter font typography
 
----
 
-## 📄 License
-
-This project was built for the Agentica 2.0 Hackathon.
