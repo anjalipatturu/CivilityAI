@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import axios from 'axios';
 import {
-  FiFileText, FiImage, FiVideo, FiMic,
+  FiFileText, FiMic,
   FiMessageCircle, FiSend, FiUploadCloud
 } from 'react-icons/fi';
 

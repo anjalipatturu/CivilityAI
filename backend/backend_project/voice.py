@@ -22,6 +22,95 @@ def convert_audio_to_text(audio_file_path):
     Convert an audio file to text using Google's Speech Recognition.
     Supports: wav, mp3, ogg, flac, m4a, webm
     """
+    # Work around removal of standard library modules in Python 3.13+
+    # that older versions of SpeechRecognition import unconditionally.
+    # We provide lightweight stubs so the library can be imported and
+    # used for non-AIFF formats.
+    try:  # pragma: no cover - environment-specific
+        import aifc  # type: ignore  # noqa: F401
+    except ModuleNotFoundError:  # pragma: no cover - environment-specific
+        import sys
+        import types
+
+        aifc_stub = types.ModuleType("aifc")
+
+        class AIFCError(Exception):
+            pass
+
+        def _aifc_not_supported(*_args, **_kwargs):  # pragma: no cover
+            raise AIFCError("AIFF format not supported in this environment")
+
+        aifc_stub.Error = AIFCError
+        aifc_stub.open = _aifc_not_supported
+        sys.modules["aifc"] = aifc_stub
+
+    # audioop was also removed in Python 3.13; create a minimal stub
+    # implementing rms() for 16-bit PCM so SpeechRecognition can
+    # compute energy levels. Other functions can be added as needed.
+    try:  # pragma: no cover - environment-specific
+        import audioop  # type: ignore  # noqa: F401
+    except ModuleNotFoundError:  # pragma: no cover - environment-specific
+        import sys
+        import types
+        import math
+        import struct
+
+        audioop_stub = types.ModuleType("audioop")
+
+        class AudioOpError(Exception):
+            pass
+
+        def rms(fragment, width):  # pragma: no cover - simple approximation
+            """Compute RMS for 16-bit mono PCM audio.
+
+            This covers the common case used by SpeechRecognition for
+            energy detection. For unsupported widths, returns 0.
+            """
+            if not fragment:
+                return 0
+            if width != 2:
+                return 0
+
+            try:
+                count = len(fragment) // width
+                if count <= 0:
+                    return 0
+                samples = struct.unpack('<%dh' % count, fragment)
+                sum_squares = sum(s * s for s in samples)
+                return int(math.sqrt(sum_squares / count))
+            except Exception:
+                return 0
+
+        def max_(fragment, width):  # pragma: no cover - simple approximation
+            if not fragment or width != 2:
+                return 0
+            try:
+                count = len(fragment) // width
+                if count <= 0:
+                    return 0
+                samples = struct.unpack('<%dh' % count, fragment)
+                return max(abs(s) for s in samples)
+            except Exception:
+                return 0
+
+        def lin2lin(fragment, width, newwidth):  # pragma: no cover - simple approximation
+            """Best-effort linear sample width conversion.
+
+            SpeechRecognition typically uses 2-byte widths; for that
+            common case we simply return the original fragment.
+            """
+            if width == newwidth:
+                return fragment
+            # Unsupported conversions: return original data so that
+            # downstream code can still attempt to operate.
+            return fragment
+
+        audioop_stub.rms = rms
+        audioop_stub.max = max_
+        audioop_stub.lin2lin = lin2lin
+        audioop_stub.error = AudioOpError
+        sys.modules["audioop"] = audioop_stub
+
     try:
         import speech_recognition as sr
     except Exception as e:  # pragma: no cover - environment-specific

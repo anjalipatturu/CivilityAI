@@ -27,6 +27,65 @@ def configure_gemini():
     return api_key
 
 
+def _map_civility_json_to_internal(content_type, civility_obj):
+    """Map Civility.ai SAFE/UNSAFE JSON to internal moderation format.
+
+    civility_obj schema (for image/video):
+    {
+      "status": "SAFE" | "UNSAFE",
+      "category": str,
+      "severity": "low" | "medium" | "high",
+      "confidence": "0-100",
+      "reason": str,
+    }
+    """
+    try:
+        status_raw = (civility_obj.get('status') or '').upper()
+        status = 'Approved' if status_raw == 'SAFE' else 'Flagged'
+
+        category = civility_obj.get('category') or 'safe'
+        if category == 'safe':
+            categories = []
+        else:
+            categories = [category]
+
+        severity = (civility_obj.get('severity') or '').lower()
+        if severity == 'low':
+            abusive_score = 20
+        elif severity == 'medium':
+            abusive_score = 55
+        elif severity == 'high':
+            abusive_score = 85
+        else:
+            abusive_score = 0
+
+        try:
+            confidence_val = int(str(civility_obj.get('confidence', '80')).strip())
+        except (TypeError, ValueError):
+            confidence_val = 80
+
+        confidence_val = max(0, min(100, confidence_val))
+
+        reason = civility_obj.get('reason') or 'No issues detected'
+    except Exception:
+        # Fallback to safe defaults if mapping fails
+        status = 'Approved'
+        categories = []
+        abusive_score = 0
+        confidence_val = 80
+        reason = 'No issues detected'
+
+    return {
+        'content_type': content_type,
+        'status': status,
+        'reason': reason,
+        'confidence_score': confidence_val,
+        'abusive_score': abusive_score,
+        'categories_detected': categories,
+        'corrected_text': None,
+    }
+
+
 def _keyword_moderation(text, content_type='text'):
     """Score text deterministically based on abusive / harmful keywords.
 
@@ -187,19 +246,38 @@ def analyze_image_content(image_path, content_type='image'):
         model = genai.GenerativeModel(VISION_MODEL_ID)
         image = PIL.Image.open(image_path)
 
-        prompt = """You are an AI content moderator. Analyze this image and provide a moderation assessment.
-You MUST respond ONLY with a valid JSON object (no markdown, no explanation, no code fences):
-{
-    "content_type": "image",
-    "status": "Approved" or "Flagged",
-    "reason": "Brief explanation",
-    "confidence_score": <0-100>,
-    "abusive_score": <0-100>,
-    "categories_detected": ["list"],
-    "corrected_text": null
-}
+        # Civility.ai image moderation prompt using SAFE/UNSAFE JSON schema
+        prompt = """
+You are an AI image moderation engine for Civility.ai.
 
-Check for: violence, nudity, hate symbols, gore, drugs, weapons, harassment."""
+Analyze this image carefully.
+
+Detect:
+- Nudity
+- Violence
+- Weapons
+- Blood or injury
+- Hate symbols
+- Offensive gestures
+- Drugs or harmful activity
+- Sexual content
+- Unsafe public content
+
+Instructions:
+- Consider full scene context.
+- Ignore harmless artistic or educational content.
+- Detect hidden harmful intent.
+
+Return ONLY valid JSON:
+
+{
+  "status": "SAFE or UNSAFE",
+  "category": "nudity / violence / weapon / hate / drugs / sexual / safe",
+  "severity": "low / medium / high",
+  "confidence": "0-100",
+  "reason": "short explanation"
+}
+"""
 
         response = model.generate_content([prompt, image])
         response_text = response.text.strip()
@@ -207,16 +285,8 @@ Check for: violence, nudity, hate symbols, gore, drugs, weapons, harassment."""
             response_text = re.sub(r'^```(?:json)?\s*', '', response_text)
             response_text = re.sub(r'\s*```$', '', response_text)
 
-        result = json.loads(response_text)
-        return {
-            'content_type': result.get('content_type', content_type),
-            'status': result.get('status', 'Approved'),
-            'reason': result.get('reason', 'No issues detected'),
-            'confidence_score': min(100, max(0, int(result.get('confidence_score', 80)))),
-            'abusive_score': min(100, max(0, int(result.get('abusive_score', 0)))),
-            'categories_detected': result.get('categories_detected', []),
-            'corrected_text': result.get('corrected_text', None),
-        }
+        civility_result = json.loads(response_text)
+        return _map_civility_json_to_internal(content_type, civility_result)
     except Exception as e:
         return _demo_moderation_response('Image content', content_type, error=str(e))
 
@@ -235,19 +305,36 @@ def analyze_video_content(video_path, content_type='video'):
         # Upload video file for Gemini analysis
         video_file = genai.upload_file(path=video_path)
 
-        prompt = """You are an AI content moderator. Analyze this video and provide a moderation assessment.
-You MUST respond ONLY with a valid JSON object (no markdown, no explanation, no code fences):
-{
-    "content_type": "video",
-    "status": "Approved" or "Flagged",
-    "reason": "Brief explanation",
-    "confidence_score": <0-100>,
-    "abusive_score": <0-100>,
-    "categories_detected": ["list"],
-    "corrected_text": null
-}
+        # Civility.ai video moderation prompt using SAFE/UNSAFE JSON schema
+        prompt = """
+You are an AI video moderation engine for Civility.ai.
 
-Check for: violence, nudity, hate content, dangerous activities, harassment."""
+Analyze these extracted video frames carefully.
+
+Detect:
+- Violence
+- Nudity
+- Abuse
+- Weapons
+- Harmful acts
+- Sexual content
+- Dangerous behavior
+
+Instructions:
+- Evaluate sequence across frames.
+- Detect repeated harmful actions.
+- Ignore harmless motion.
+
+Return ONLY valid JSON:
+
+{
+  "status": "SAFE or UNSAFE",
+  "category": "violence / nudity / weapon / abuse / dangerous / safe",
+  "severity": "low / medium / high",
+  "confidence": "0-100",
+  "reason": "short explanation"
+}
+"""
 
         response = model.generate_content([prompt, video_file])
         response_text = response.text.strip()
@@ -255,16 +342,8 @@ Check for: violence, nudity, hate content, dangerous activities, harassment."""
             response_text = re.sub(r'^```(?:json)?\s*', '', response_text)
             response_text = re.sub(r'\s*```$', '', response_text)
 
-        result = json.loads(response_text)
-        return {
-            'content_type': result.get('content_type', content_type),
-            'status': result.get('status', 'Approved'),
-            'reason': result.get('reason', 'No issues detected'),
-            'confidence_score': min(100, max(0, int(result.get('confidence_score', 80)))),
-            'abusive_score': min(100, max(0, int(result.get('abusive_score', 0)))),
-            'categories_detected': result.get('categories_detected', []),
-            'corrected_text': result.get('corrected_text', None),
-        }
+        civility_result = json.loads(response_text)
+        return _map_civility_json_to_internal(content_type, civility_result)
     except Exception as e:
         return _demo_moderation_response('Video content', content_type, error=str(e))
 

@@ -21,6 +21,13 @@ urlpatterns = [
     # Content moderation
     path('analyze-content', views.analyze_content, name='analyze_content'),
 
+    # Audio transcription (voice-to-text helper)
+    path('transcribe-audio', views.transcribe_audio, name='transcribe_audio'),
+
+    # Simple Speech-to-Text (DRF view)
+    path('speech-to-text', views.speech_to_text, name='speech_to_text'),
+    path('api/speech-to-text/', views.speech_to_text, name='api_speech_to_text'),
+
     # User behavior
     path('user-behavior', views.user_behavior, name='user_behavior'),
 

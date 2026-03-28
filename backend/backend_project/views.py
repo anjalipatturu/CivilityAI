@@ -7,6 +7,8 @@ from django.conf import settings
 from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
 
 from moderation.models import Content
 
@@ -376,7 +378,21 @@ def analyze_content(request):
                     files.append(f)
 
         for uploaded_file in files:
-            content_type = get_content_type_from_file(uploaded_file.name)
+            # Prefer MIME type from the upload when available so that
+            # audio recordings (e.g. audio/webm from MediaRecorder)
+            # are correctly routed to the audio transcription path.
+            content_type = None
+            mime_type = getattr(uploaded_file, 'content_type', '') or ''
+
+            if mime_type.startswith('image/'):
+                content_type = 'image'
+            elif mime_type.startswith('video/'):
+                content_type = 'video'
+            elif mime_type.startswith('audio/'):
+                content_type = 'audio'
+
+            if not content_type:
+                content_type = get_content_type_from_file(uploaded_file.name)
 
             if content_type == 'image':
                 file_path = save_uploaded_file(uploaded_file)
@@ -663,3 +679,96 @@ def favicon(request):
     when no favicon is configured for the backend service.
     """
     return HttpResponse(status=204)
+
+
+# ── Audio Transcription (Voice-to-Text) ─────────────────────
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def transcribe_audio(request):
+    """POST /transcribe-audio
+
+    Accept a single audio file, convert it to text using the existing
+    speech recognition pipeline, and return only the transcription.
+
+    This is used by the frontend voice-to-text feature when browser
+    speech recognition is unavailable or unreliable.
+    """
+    # Authentication is optional for transcription-only; if you want to
+    # restrict it, uncomment the token check below.
+    # user_id = get_user_from_request(request)
+    # if not user_id:
+    #     return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    uploaded_file = None
+    for key in ["file", "audio", "voice"]:
+        if key in request.FILES:
+            uploaded_file = request.FILES[key]
+            break
+
+    if not uploaded_file:
+        return JsonResponse({
+            'success': False,
+            'text': '',
+            'error': 'No audio file provided. Use form field name "file".',
+        }, status=400)
+
+    temp_path = None
+    try:
+        temp_path = save_uploaded_audio(uploaded_file)
+        result = convert_audio_to_text(temp_path)
+        return JsonResponse({
+            'success': result.get('success', False),
+            'text': result.get('text', ''),
+            'error': result.get('error', None),
+        }, status=200)
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'text': '',
+            'error': f'Transcription failed: {str(e)}',
+        }, status=500)
+    finally:
+        if temp_path:
+            cleanup_audio_file(temp_path)
+
+
+# ── Simple Speech-to-Text endpoint (DRF) ───────────────────
+
+@api_view(['POST'])
+def speech_to_text(request):
+    """Accept an uploaded audio file and return its transcription.
+
+    This uses the existing audio pipeline (pydub + SpeechRecognition)
+    via convert_audio_to_text(), which supports common formats like
+    webm/ogg/wav that the browser MediaRecorder produces.
+    """
+    uploaded_file = request.FILES.get('audio')
+
+    if not uploaded_file:
+        return Response({'error': 'No audio file provided (expected field name "audio")'}, status=400)
+
+    temp_path = None
+    try:
+        temp_path = save_uploaded_audio(uploaded_file)
+        result = convert_audio_to_text(temp_path)
+
+        if not result.get('success'):
+            return Response({
+                'text': result.get('text', ''),
+                'error': result.get('error', 'Transcription failed'),
+            }, status=400)
+
+        return Response({
+            'text': result.get('text', ''),
+            'error': None,
+        })
+    except Exception as e:
+        return Response({
+            'text': '',
+            'error': f'Transcription failed: {str(e)}',
+        }, status=500)
+    finally:
+        if temp_path:
+            cleanup_audio_file(temp_path)
+

@@ -1,106 +1,78 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { FiMic, FiMicOff, FiSquare } from 'react-icons/fi';
+import React, { useState, useRef } from 'react';
+import { FiMic, FiSquare } from 'react-icons/fi';
 
 function VoiceRecorder({ onTranscription }) {
-  const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const [isSupported, setIsSupported] = useState(true);
-  const recognitionRef = useRef(null);
+  const [error, setError] = useState('');
+  const mediaRecorderRef = useRef(null);
+  const chunksRef = useRef([]);
+  const [isRecording, setIsRecording] = useState(false);
 
-  useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setIsSupported(false);
+  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
+  const startRecording = async () => {
+    setTranscript('');
+    setError('');
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      setError('Microphone recording is not supported in this browser.');
       return;
     }
 
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = (event) => {
-      let finalTranscript = '';
-      let interimTranscript = '';
-
-      for (let i = 0; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) {
-          finalTranscript += result[0].transcript + ' ';
-        } else {
-          interimTranscript += result[0].transcript;
-        }
-      }
-
-      const fullText = (finalTranscript + interimTranscript).trim();
-      setTranscript(fullText);
-    };
-
-    recognition.onerror = (event) => {
-      console.error('Speech recognition error:', event.error);
-      if (event.error !== 'no-speech') {
-        setIsRecording(false);
-      }
-    };
-
-    recognition.onend = () => {
-      if (isRecording) {
-        try {
-          recognition.start();
-        } catch (e) {
-          setIsRecording(false);
-        }
-      }
-    };
-
-    recognitionRef.current = recognition;
-
-    return () => {
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {
-          // ignore
-        }
-      }
-    };
-  }, [isRecording]);
-
-  const startRecording = () => {
-    setTranscript('');
-    setIsRecording(true);
     try {
-      recognitionRef.current?.start();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+
+      chunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          chunksRef.current.push(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        const formData = new FormData();
+        formData.append('audio', blob, 'voice.webm');
+
+        try {
+          const response = await fetch(`${API_URL}/api/speech-to-text/`, {
+            method: 'POST',
+            body: formData,
+          });
+
+          const data = await response.json();
+
+          if (data.text) {
+            setTranscript(data.text);
+            if (onTranscription) {
+              onTranscription(data.text);
+            }
+          } else if (data.error) {
+            setError(data.error);
+          }
+        } catch (err) {
+          setError('Failed to transcribe audio. Please try again.');
+        } finally {
+          stream.getTracks().forEach((t) => t.stop());
+          setIsRecording(false);
+          chunksRef.current = [];
+        }
+      };
+
+      mediaRecorder.start();
+      mediaRecorderRef.current = mediaRecorder;
+      setIsRecording(true);
     } catch (e) {
-      console.error('Failed to start recording:', e);
+      setError('Unable to access microphone. Check permissions and try again.');
     }
   };
 
   const stopRecording = () => {
-    setIsRecording(false);
-    try {
-      recognitionRef.current?.stop();
-    } catch (e) {
-      // ignore
-    }
-    if (transcript && onTranscription) {
-      onTranscription(transcript);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
     }
   };
-
-  if (!isSupported) {
-    return (
-      <div className="voice-recorder">
-        <div style={{ color: 'var(--text-muted)', textAlign: 'center' }}>
-          <FiMicOff size={32} style={{ marginBottom: '12px', opacity: 0.4 }} />
-          <p>Speech recognition is not supported in this browser.</p>
-          <p style={{ fontSize: '0.8125rem', marginTop: '8px' }}>
-            Please use Chrome or Edge for voice-to-text features.
-          </p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="voice-recorder">
@@ -115,6 +87,12 @@ function VoiceRecorder({ onTranscription }) {
       <p className={`voice-status ${isRecording ? 'recording' : ''}`}>
         {isRecording ? '🔴 Recording... Click to stop' : 'Click the mic to start speaking'}
       </p>
+
+      {error && (
+        <p style={{ color: 'var(--danger)', fontSize: '0.8125rem', marginTop: '8px' }}>
+          {error}
+        </p>
+      )}
 
       {transcript && (
         <div className="transcription-preview">
