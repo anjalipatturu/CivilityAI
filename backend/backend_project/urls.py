@@ -9,6 +9,9 @@ urlpatterns = [
     path('', views.health_check, name='health_check'),
     path('api/health', views.health_check, name='api_health'),
 
+    # Debug: download last audio
+    path('debug/download-last-audio', views.download_last_audio, name='download_last_audio'),
+
     # Favicon (prevent 404 noise)
     path('favicon.ico', views.favicon, name='favicon'),
 

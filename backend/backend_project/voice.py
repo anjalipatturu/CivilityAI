@@ -45,8 +45,7 @@ def convert_audio_to_text(audio_file_path):
         sys.modules["aifc"] = aifc_stub
 
     # audioop was also removed in Python 3.13; create a minimal stub
-    # implementing rms() for 16-bit PCM so SpeechRecognition can
-    # compute energy levels. Other functions can be added as needed.
+    # implementing rms(), max(), lin2lin(), and ratecv() for compatibility.
     try:  # pragma: no cover - environment-specific
         import audioop  # type: ignore  # noqa: F401
     except ModuleNotFoundError:  # pragma: no cover - environment-specific
@@ -61,16 +60,10 @@ def convert_audio_to_text(audio_file_path):
             pass
 
         def rms(fragment, width):  # pragma: no cover - simple approximation
-            """Compute RMS for 16-bit mono PCM audio.
-
-            This covers the common case used by SpeechRecognition for
-            energy detection. For unsupported widths, returns 0.
-            """
             if not fragment:
                 return 0
             if width != 2:
                 return 0
-
             try:
                 count = len(fragment) // width
                 if count <= 0:
@@ -94,20 +87,20 @@ def convert_audio_to_text(audio_file_path):
                 return 0
 
         def lin2lin(fragment, width, newwidth):  # pragma: no cover - simple approximation
-            """Best-effort linear sample width conversion.
-
-            SpeechRecognition typically uses 2-byte widths; for that
-            common case we simply return the original fragment.
-            """
             if width == newwidth:
                 return fragment
-            # Unsupported conversions: return original data so that
-            # downstream code can still attempt to operate.
             return fragment
+
+        def ratecv(fragment, width, nchannels, inrate, outrate, state, weightA=1, weightB=0):
+            # This is a stub that just returns the original fragment and state.
+            # It does NOT actually resample audio, but is enough for pydub to not crash.
+            # For real resampling, use ffmpeg or a proper audio library.
+            return fragment, state
 
         audioop_stub.rms = rms
         audioop_stub.max = max_
         audioop_stub.lin2lin = lin2lin
+        audioop_stub.ratecv = ratecv
         audioop_stub.error = AudioOpError
         sys.modules["audioop"] = audioop_stub
 
@@ -135,7 +128,9 @@ def convert_audio_to_text(audio_file_path):
     try:
         file_ext = os.path.splitext(audio_file_path)[1].lower()
 
-        # Convert non-wav formats to wav
+        # Convert non-wav formats (e.g. webm/ogg from MediaRecorder)
+        # to a normalized mono 16kHz WAV file for best
+        # compatibility with SpeechRecognition / Google STT.
         if file_ext != '.wav':
             temp_wav = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
             temp_wav_path = temp_wav.name
@@ -143,6 +138,22 @@ def convert_audio_to_text(audio_file_path):
 
             try:
                 audio = AudioSegment.from_file(audio_file_path)
+
+                # Normalize to 16kHz mono which tends to work best
+                # with cloud speech APIs, and apply simple gain
+                # normalization so very quiet recordings become
+                # easier to recognize.
+                audio = audio.set_channels(1).set_frame_rate(16000)
+                try:
+                    target_dbfs = -20.0
+                    if audio.dBFS != float('-inf'):
+                        change_in_dbfs = target_dbfs - audio.dBFS
+                        audio = audio.apply_gain(change_in_dbfs)
+                except Exception:
+                    # If normalization fails, fall back to the raw
+                    # converted audio without raising an error.
+                    pass
+
                 audio.export(temp_wav_path, format='wav')
                 wav_path = temp_wav_path
             except Exception as e:
@@ -167,10 +178,13 @@ def convert_audio_to_text(audio_file_path):
                 'error': None,
             }
         except sr.UnknownValueError:
+            # This happens when the speech API cannot confidently
+            # extract text from the audio (often due to silence,
+            # background noise, or very short clips).
             return {
                 'success': False,
                 'text': '',
-                'error': 'Could not understand the audio content',
+                'error': 'Could not understand the audio content. Please speak clearly for a few seconds and avoid background noise.',
             }
         except sr.RequestError as e:
             return {
@@ -201,6 +215,18 @@ def save_uploaded_audio(uploaded_file):
     with open(file_path, 'wb+') as dest:
         for chunk in uploaded_file.chunks():
             dest.write(chunk)
+
+    # --- Debug: also save a copy to backend/audio_debug/ with timestamp ---
+    try:
+        import shutil, datetime
+        debug_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'audio_debug'))
+        os.makedirs(debug_dir, exist_ok=True)
+        ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        debug_path = os.path.join(debug_dir, f"{ts}_{uploaded_file.name}")
+        shutil.copy2(file_path, debug_path)
+    except Exception as e:
+        # Don't crash if debug saving fails
+        pass
 
     return file_path
 

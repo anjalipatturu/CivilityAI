@@ -1,3 +1,20 @@
+import glob
+from django.http import FileResponse
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
+# Debug endpoint to download the last received audio file
+@csrf_exempt
+@require_http_methods(["GET"])
+def download_last_audio(request):
+    """Download the most recent audio file received for debugging."""
+    import os
+    debug_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'audio_debug'))
+    files = sorted(glob.glob(os.path.join(debug_dir, '*')), reverse=True)
+    if not files:
+        return JsonResponse({'error': 'No audio files found.'}, status=404)
+    latest = files[0]
+    return FileResponse(open(latest, 'rb'), as_attachment=True, filename=os.path.basename(latest))
 """API Views for Civility.ai backend."""
 
 import json
@@ -742,29 +759,47 @@ def speech_to_text(request):
     This uses the existing audio pipeline (pydub + SpeechRecognition)
     via convert_audio_to_text(), which supports common formats like
     webm/ogg/wav that the browser MediaRecorder produces.
+
+    The endpoint always returns HTTP 200 for well-formed requests and
+    uses a ``success`` flag in the JSON body to indicate whether
+    speech recognition succeeded. This avoids noisy 400 responses when
+    audio cannot be understood while still surfacing a clear error
+    message to the frontend.
     """
-    uploaded_file = request.FILES.get('audio')
+
+    # Accept common field names used by different clients.
+    uploaded_file = (
+        request.FILES.get('audio')
+        or request.FILES.get('file')
+        or request.FILES.get('voice')
+    )
 
     if not uploaded_file:
-        return Response({'error': 'No audio file provided (expected field name "audio")'}, status=400)
+        return Response({
+            'success': False,
+            'text': '',
+            'error': 'No audio file provided (expected field name "audio")',
+        }, status=200)
 
     temp_path = None
     try:
         temp_path = save_uploaded_audio(uploaded_file)
         result = convert_audio_to_text(temp_path)
 
-        if not result.get('success'):
-            return Response({
-                'text': result.get('text', ''),
-                'error': result.get('error', 'Transcription failed'),
-            }, status=400)
+        success = bool(result.get('success'))
+        text = result.get('text', '')
+        error_msg = result.get('error')
 
+        # Always return 200 for a valid request; the frontend can use
+        # the "success" flag and error message to decide what to show.
         return Response({
-            'text': result.get('text', ''),
-            'error': None,
-        })
+            'success': success,
+            'text': text,
+            'error': error_msg if not success else None,
+        }, status=200)
     except Exception as e:
         return Response({
+            'success': False,
             'text': '',
             'error': f'Transcription failed: {str(e)}',
         }, status=500)
