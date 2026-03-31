@@ -182,18 +182,6 @@ function LoginPage({ onLogin }) {
           {isLoading ? 'Signing in...' : 'Continue with Google'}
         </button>
 
-        {/* Demo mode */}
-        <div className="login-divider">or try demo mode</div>
-
-        <button
-          className="btn btn-outline"
-          onClick={handleDemoLogin}
-          disabled={isLoading}
-          style={{ width: '100%' }}
-        >
-          <FiZap size={16} />
-          Try Demo Mode
-        </button>
 
         <div className="login-features">
           <div className="login-feature">
