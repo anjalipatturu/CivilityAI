@@ -5,10 +5,18 @@ Django settings for Civility.ai backend project.
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+import dj_database_url
+from google.auth import default
+
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+ALLOWED_HOSTS = ['*']
+STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-civility-ai-dev-key-change-in-production')
 
@@ -61,12 +69,12 @@ WSGI_APPLICATION = 'backend_project.wsgi.application'
 # We use MongoDB via PyMongo directly (not Django ORM)
 # Default SQLite for Django internals (admin, sessions, etc.)
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    'default': dj_database_url.config(
+        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+        conn_max_age=600,
+        ssl_require=bool(os.getenv('DATABASE_URL')),
+    )
 }
-
 # MongoDB Configuration
 MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
 MONGODB_NAME = os.getenv('MONGODB_NAME', 'civility_ai')
@@ -139,3 +147,11 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.FormParser',
     ],
 }
+
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+STATIC_URL = '/static/'
+
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
