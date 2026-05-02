@@ -7,13 +7,30 @@ Gemini if configured, otherwise fall back to a simple demo response.
 import json
 import re
 
-import google.generativeai as genai
 from django.conf import settings
+
+_genai = None
+_genai_import_error = None
 
 
 # Prefer widely available, stable model IDs by default for non-text content.
 TEXT_MODEL_ID = getattr(settings, 'GEMINI_TEXT_MODEL_ID', 'gemini-1.5-flash')
 VISION_MODEL_ID = getattr(settings, 'GEMINI_VISION_MODEL_ID', 'gemini-1.5-flash')
+
+
+def _ensure_genai_loaded():
+    """Lazy-load google.generativeai and cache import state."""
+    global _genai, _genai_import_error
+    if _genai is not None or _genai_import_error is not None:
+        return _genai
+
+    try:
+        import google.generativeai as genai
+        _genai = genai
+    except Exception as exc:
+        _genai_import_error = str(exc)
+        _genai = None
+    return _genai
 
 
 def configure_gemini():
@@ -22,8 +39,17 @@ def configure_gemini():
     Returns the API key string (or empty string if not configured).
     """
     api_key = getattr(settings, 'GEMINI_API_KEY', '')
-    if api_key:
+    if not api_key:
+        return ''
+
+    genai = _ensure_genai_loaded()
+    if not genai:
+        return ''
+
+    try:
         genai.configure(api_key=api_key)
+    except Exception:
+        return ''
     return api_key
 
 
