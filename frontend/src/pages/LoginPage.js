@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useGoogleLogin } from '@react-oauth/google';
 import { toast } from 'react-toastify';
-import { FiShield, FiZap, FiLock, FiGlobe } from 'react-icons/fi';
+import { FiShield, FiLock, FiGlobe } from 'react-icons/fi';
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -36,33 +36,6 @@ function LoginPage({ onLogin }) {
       toast.error('Google login failed');
     },
   });
-
-  const handleDemoLogin = async () => {
-    setIsLoading(true);
-    try {
-      const response = await axios.post(`${API_URL}/auth/google-login`, {
-        token: 'demo-token',
-      });
-
-      if (response.data.success) {
-        onLogin(response.data.user, response.data.token);
-        toast.success(`Welcome, ${response.data.user.name}!`);
-      }
-    } catch (error) {
-      // Fallback demo login
-      const demoUser = {
-        user_id: 'demo_user_001',
-        email: 'demo@civility.ai',
-        name: 'Demo User',
-        picture: '',
-      };
-      const demoToken = 'demo-jwt-token';
-      onLogin(demoUser, demoToken);
-      toast.success('Welcome, Demo User! (Offline mode)');
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleEmailLogin = async (e) => {
     e.preventDefault();
